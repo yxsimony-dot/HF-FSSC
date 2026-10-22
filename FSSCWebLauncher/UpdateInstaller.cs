@@ -99,7 +99,7 @@ internal static class UpdateInstaller
         ProcessStartInfo startInfo = new("powershell.exe")
         {
             UseShellExecute = true,
-            WorkingDirectory = update.WorkingDirectory,
+            WorkingDirectory = targetDirectory,
             WindowStyle = ProcessWindowStyle.Hidden
         };
 
