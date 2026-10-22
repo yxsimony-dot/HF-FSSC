@@ -1,6 +1,7 @@
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Win32;
 using System.IO;
+using System.Net.Http;
 using System.Windows;
 using System.Windows.Interop;
 
@@ -32,9 +33,12 @@ public partial class MainWindow : Window
     private bool _initializationStarted;
     private bool _initialNavigationPending;
     private bool _batchRunning;
+    private bool _updateRunning;
+    private bool _updateInstallationStarted;
     private string? _receiptDirectory;
     private string? _completedDirectory;
     private ReceiptPageClient? _receiptPageClient;
+    private readonly GitHubUpdateService _updateService = new();
 
     public MainWindow()
     {
@@ -275,6 +279,126 @@ public partial class MainWindow : Window
         finally
         {
             EndBatch();
+        }
+    }
+
+    private async void OnCheckForUpdatesClicked(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (_batchRunning || _updateRunning)
+        {
+            return;
+        }
+
+        _updateRunning = true;
+        SetBatchControlsEnabled(false);
+        UpdateButtonText.Text = "检查中...";
+
+        using CancellationTokenSource cancellationSource =
+            new(TimeSpan.FromMinutes(15));
+
+        try
+        {
+            AvailableUpdate? update =
+                await _updateService.CheckForUpdateAsync(
+                    cancellationSource.Token);
+
+            if (update is null)
+            {
+                MessageBox.Show(
+                    this,
+                    $"当前已是最新版本（{ApplicationVersion.Current.Version}）。",
+                    "检查更新",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information);
+                return;
+            }
+
+            MessageBoxResult confirmation = MessageBox.Show(
+                this,
+                $"发现新版本 {update.Version}，发布时间："
+                + $"{update.PublishedAt.ToLocalTime():yyyy-MM-dd HH:mm}。\n\n"
+                + "是否立即下载并安装？安装时程序会自动关闭并重新启动。",
+                "发现新版本",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Information);
+
+            if (confirmation != MessageBoxResult.Yes)
+            {
+                return;
+            }
+
+            Progress<int> progress = new(percent =>
+            {
+                UpdateButtonText.Text = $"下载中 {percent}%";
+            });
+
+            DownloadedUpdate downloadedUpdate =
+                await _updateService.DownloadUpdateAsync(
+                    update,
+                    progress,
+                    cancellationSource.Token);
+
+            UpdateButtonText.Text = "正在安装...";
+            UpdateInstaller.Launch(downloadedUpdate);
+            _updateInstallationStarted = true;
+            Application.Current.Shutdown();
+        }
+        catch (OperationCanceledException)
+        {
+            MessageBox.Show(
+                this,
+                "更新操作超时，请检查网络后重试。",
+                "检查更新",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+        catch (HttpRequestException)
+        {
+            MessageBox.Show(
+                this,
+                "无法连接 GitHub 更新服务，请检查网络后重试。",
+                "检查更新",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+        catch (InvalidDataException exception)
+        {
+            MessageBox.Show(
+                this,
+                exception.Message,
+                "更新包无效",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        catch (System.ComponentModel.Win32Exception exception)
+            when (exception.NativeErrorCode == 1223)
+        {
+            MessageBox.Show(
+                this,
+                "更新安装已取消。",
+                "检查更新",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                this,
+                $"更新失败：{exception.Message}",
+                "检查更新",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        finally
+        {
+            if (!_updateInstallationStarted)
+            {
+                _updateRunning = false;
+                UpdateButtonText.Text = "检查更新";
+                SetBatchControlsEnabled(!_batchRunning);
+            }
         }
     }
 
@@ -539,9 +663,11 @@ public partial class MainWindow : Window
 
     private void SetBatchControlsEnabled(bool enabled)
     {
-        SendReceiptButton.IsEnabled = enabled;
-        ChooseDirectoryButton.IsEnabled = enabled;
-        ChooseCompletedDirectoryButton.IsEnabled = enabled;
+        bool controlsEnabled = enabled && !_updateRunning;
+        SendReceiptButton.IsEnabled = controlsEnabled;
+        ChooseDirectoryButton.IsEnabled = controlsEnabled;
+        ChooseCompletedDirectoryButton.IsEnabled = controlsEnabled;
+        UpdateButton.IsEnabled = controlsEnabled;
     }
 
     private void ShowNavigationError()

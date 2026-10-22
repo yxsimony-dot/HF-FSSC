@@ -23,6 +23,8 @@
     <SelfContained>true</SelfContained>
     <PublishSingleFile>false</PublishSingleFile>
     <PublishTrimmed>false</PublishTrimmed>
+    <VersionPrefix>1.0.0</VersionPrefix>
+    <RepositoryUrl>https://github.com/yxsimony-dot/HF-FSSC</RepositoryUrl>
   </PropertyGroup>
 
 </Project>

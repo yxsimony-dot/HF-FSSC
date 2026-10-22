@@ -30,6 +30,8 @@
                     <ColumnDefinition Width="128" />
                     <ColumnDefinition Width="8" />
                     <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="12" />
+                    <ColumnDefinition Width="128" />
                 </Grid.ColumnDefinitions>
 
                 <Button x:Name="SendReceiptButton"
@@ -113,6 +115,27 @@
                                ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"
                                AutomationProperties.Name="当前已完成目录" />
                 </Border>
+
+                <Button x:Name="UpdateButton"
+                        Grid.Column="10"
+                        Height="34"
+                        Padding="12,6"
+                        Background="White"
+                        BorderBrush="#AEB8C6"
+                        Foreground="#243447"
+                        Click="OnCheckForUpdatesClicked"
+                        AutomationProperties.Name="检查更新">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Margin="0,0,7,0"
+                                   VerticalAlignment="Center"
+                                   FontFamily="Segoe MDL2 Assets"
+                                   FontSize="15"
+                                   Text="&#xE72C;" />
+                        <TextBlock x:Name="UpdateButtonText"
+                                   VerticalAlignment="Center"
+                                   Text="检查更新" />
+                    </StackPanel>
+                </Button>
             </Grid>
         </Border>
 
