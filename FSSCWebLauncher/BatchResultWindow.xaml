@@ -1,0 +1,56 @@
+<Window x:Class="FSSCWebLauncher.BatchResultWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="发送回单结果"
+        Width="760"
+        Height="520"
+        MinWidth="520"
+        MinHeight="360"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False">
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="8" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="14" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="14" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock x:Name="SummaryText"
+                   Grid.Row="0"
+                   FontSize="15"
+                   FontWeight="SemiBold"
+                   Foreground="#243447"
+                   TextWrapping="Wrap" />
+
+        <TextBlock x:Name="CategoryText"
+                   Grid.Row="2"
+                   Foreground="#536273"
+                   TextWrapping="Wrap" />
+
+        <TextBox x:Name="FailureListText"
+                 Grid.Row="4"
+                 Padding="10"
+                 IsReadOnly="True"
+                 AcceptsReturn="True"
+                 TextWrapping="Wrap"
+                 HorizontalScrollBarVisibility="Disabled"
+                 VerticalScrollBarVisibility="Auto"
+                 FontSize="13"
+                 BorderBrush="#C8D0DB"
+                 Background="#FAFBFC"
+                 AutomationProperties.Name="未完成的回单及原因" />
+
+        <Button Grid.Row="6"
+                Width="88"
+                Height="32"
+                HorizontalAlignment="Right"
+                Content="关闭"
+                IsDefault="True"
+                Click="OnCloseClicked"
+                AutomationProperties.Name="关闭发送结果" />
+    </Grid>
+</Window>

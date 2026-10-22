@@ -1,0 +1,12 @@
+华发 FSSC 网页启动器
+
+启动方式：
+双击 FSSCWebLauncher.exe。
+
+运行要求：
+1. 支持 Windows x64。
+2. 电脑需要安装 Microsoft Edge WebView2 Evergreen Runtime。
+3. 本发布目录是一个完整程序，FSSCWebLauncher.exe 必须和目录内的其他文件一起保留，不能只复制 EXE。
+
+程序启动后会自动打开：
+https://fssc-w.cnhuafas.com/OSPApplication/application.html
