@@ -103,46 +103,50 @@ internal sealed class GitHubUpdateService
                 throw new InvalidDataException("更新包大小无效。");
             }
 
-            await using Stream source =
-                await response.Content.ReadAsStreamAsync(cancellationToken);
-            await using FileStream destination = new(
-                packagePath,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None,
-                bufferSize: 81920,
-                FileOptions.Asynchronous | FileOptions.SequentialScan);
-
-            byte[] buffer = new byte[81920];
             long totalBytes = 0;
-            int lastPercentage = -1;
-
-            while (true)
             {
-                int bytesRead = await source.ReadAsync(
-                    buffer,
-                    cancellationToken);
-                if (bytesRead == 0)
+                await using Stream source =
+                    await response.Content.ReadAsStreamAsync(
+                        cancellationToken);
+                await using FileStream destination = new(
+                    packagePath,
+                    FileMode.CreateNew,
+                    FileAccess.Write,
+                    FileShare.None,
+                    bufferSize: 81920,
+                    FileOptions.Asynchronous
+                    | FileOptions.SequentialScan);
+
+                byte[] buffer = new byte[81920];
+                int lastPercentage = -1;
+
+                while (true)
                 {
-                    break;
+                    int bytesRead = await source.ReadAsync(
+                        buffer,
+                        cancellationToken);
+                    if (bytesRead == 0)
+                    {
+                        break;
+                    }
+
+                    await destination.WriteAsync(
+                        buffer.AsMemory(0, bytesRead),
+                        cancellationToken);
+                    totalBytes += bytesRead;
+
+                    int percentage = (int)Math.Min(
+                        100,
+                        totalBytes * 100 / expectedSize);
+                    if (percentage != lastPercentage)
+                    {
+                        progress?.Report(percentage);
+                        lastPercentage = percentage;
+                    }
                 }
 
-                await destination.WriteAsync(
-                    buffer.AsMemory(0, bytesRead),
-                    cancellationToken);
-                totalBytes += bytesRead;
-
-                int percentage = (int)Math.Min(
-                    100,
-                    totalBytes * 100 / expectedSize);
-                if (percentage != lastPercentage)
-                {
-                    progress?.Report(percentage);
-                    lastPercentage = percentage;
-                }
+                await destination.FlushAsync(cancellationToken);
             }
-
-            await destination.FlushAsync(cancellationToken);
 
             if (update.PackageSize > 0
                 && totalBytes != update.PackageSize)
