@@ -37,6 +37,8 @@ public partial class MainWindow : Window
     private bool _updateInstallationStarted;
     private string? _receiptDirectory;
     private string? _completedDirectory;
+    private string? _reconciliationDirectory;
+    private string? _reconciliationCompletedDirectory;
     private ReceiptPageClient? _receiptPageClient;
     private readonly GitHubUpdateService _updateService = new();
 
@@ -46,6 +48,9 @@ public partial class MainWindow : Window
         LauncherSettings settings = LauncherSettingsStore.Load();
         _receiptDirectory = settings.ReceiptDirectory;
         _completedDirectory = settings.CompletedDirectory;
+        _reconciliationDirectory = settings.ReconciliationDirectory;
+        _reconciliationCompletedDirectory =
+            settings.ReconciliationCompletedDirectory;
         UpdateDirectoryDisplays();
         Loaded += OnLoaded;
     }
@@ -209,6 +214,236 @@ public partial class MainWindow : Window
         }
 
         SaveDirectorySettings("设置已完成目录");
+    }
+
+    private void OnChooseReconciliationDirectoryClicked(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (_batchRunning)
+        {
+            return;
+        }
+
+        OpenFolderDialog dialog = new()
+        {
+            Title = "设置对账目录",
+            Multiselect = false
+        };
+
+        if (!string.IsNullOrWhiteSpace(_reconciliationDirectory)
+            && Directory.Exists(_reconciliationDirectory))
+        {
+            dialog.InitialDirectory = _reconciliationDirectory;
+        }
+
+        string? selectedDirectory = dialog.ShowDialog(this) == true
+            ? dialog.FolderName
+            : null;
+        DirectorySelectionOutcome outcome =
+            ApplySelectedReconciliationDirectory(
+                selectedDirectory,
+                completedDirectory: false);
+        if (outcome == DirectorySelectionOutcome.Cancelled)
+        {
+            return;
+        }
+
+        if (outcome == DirectorySelectionOutcome.Invalid)
+        {
+            ShowInvalidDirectoryWarning("设置对账目录");
+            return;
+        }
+
+        if (outcome == DirectorySelectionOutcome.SameAsOther)
+        {
+            ShowReconciliationSameDirectoryWarning("设置对账目录");
+            return;
+        }
+
+        SaveDirectorySettings("设置对账目录");
+    }
+
+    private void OnChooseReconciliationCompletedDirectoryClicked(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (_batchRunning)
+        {
+            return;
+        }
+
+        OpenFolderDialog dialog = new()
+        {
+            Title = "设置对账已完成目录",
+            Multiselect = false
+        };
+
+        if (!string.IsNullOrWhiteSpace(_reconciliationCompletedDirectory)
+            && Directory.Exists(_reconciliationCompletedDirectory))
+        {
+            dialog.InitialDirectory = _reconciliationCompletedDirectory;
+        }
+
+        string? selectedDirectory = dialog.ShowDialog(this) == true
+            ? dialog.FolderName
+            : null;
+        DirectorySelectionOutcome outcome =
+            ApplySelectedReconciliationDirectory(
+                selectedDirectory,
+                completedDirectory: true);
+        if (outcome == DirectorySelectionOutcome.Cancelled)
+        {
+            return;
+        }
+
+        if (outcome == DirectorySelectionOutcome.Invalid)
+        {
+            ShowInvalidDirectoryWarning("设置对账已完成目录");
+            return;
+        }
+
+        if (outcome == DirectorySelectionOutcome.SameAsOther)
+        {
+            ShowReconciliationSameDirectoryWarning("设置对账已完成目录");
+            return;
+        }
+
+        SaveDirectorySettings("设置对账已完成目录");
+    }
+
+    private async void OnSendReconciliationClicked(
+        object sender,
+        RoutedEventArgs e)
+    {
+        if (_batchRunning)
+        {
+            return;
+        }
+
+        if (!TryCreateReconciliationQueueSnapshot(
+                out IReadOnlyList<ReconciliationWorkItem> queue,
+                out string? completedDirectorySnapshot))
+        {
+            return;
+        }
+
+        if (Browser.CoreWebView2 is null || _receiptPageClient is null)
+        {
+            MessageBox.Show(
+                this,
+                "网页正在加载，请稍后再点击“发送对账”。",
+                "发送对账",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        if (!TryBeginBatch())
+        {
+            return;
+        }
+
+        SetReconciliationProcessingStatus();
+
+        try
+        {
+            bool pageReady;
+
+            try
+            {
+                pageReady =
+                    await _receiptPageClient.NavigateToReconciliationPageAsync();
+            }
+            catch
+            {
+                pageReady = false;
+            }
+
+            if (!pageReady)
+            {
+                IReadOnlyList<ReconciliationBatchItemResult> pageFailures =
+                    queue.Select(workItem =>
+                        new ReconciliationBatchItemResult(
+                            workItem,
+                            ReconciliationItemStatus.QueryFailed,
+                            "无法进入电子其他会计资料收集页面或查询控件未就绪"))
+                    .ToArray();
+                ShowReconciliationResults(pageFailures);
+                return;
+            }
+
+            IReadOnlyList<ReconciliationBatchItemResult> results =
+                await ProcessReconciliationBatchAsync(
+                    queue,
+                    completedDirectorySnapshot);
+            ShowReconciliationResults(results);
+        }
+        finally
+        {
+            EndBatch();
+        }
+    }
+
+    private async Task<IReadOnlyList<ReconciliationBatchItemResult>>
+        ProcessReconciliationBatchAsync(
+            IReadOnlyList<ReconciliationWorkItem> queue,
+            string? completedDirectorySnapshot)
+    {
+        ReconciliationTemporaryWorkspace workspace = new();
+        IReadOnlyList<ReconciliationBatchItemResult> results =
+            Array.Empty<ReconciliationBatchItemResult>();
+        IReadOnlyList<string> cleanupWarnings;
+
+        try
+        {
+            OfficePdfConversionService conversionService = new(
+                workspace);
+            ArchivePdfPreparationService archiveService = new(
+                workspace,
+                stageChanged: SetReconciliationArchiveStatus);
+            ReconciliationUploadPayloadFactory payloadFactory = new(
+                conversionService.CreatePayloadAsync,
+                archiveService.CreatePayloadAsync);
+            ReconciliationItemProcessor processor = new(
+                _receiptPageClient!,
+                payloadFactory,
+                SetReconciliationConversionStatus);
+            results =
+                await ReconciliationBatchRunner.ProcessSequentiallyAsync(
+                    queue,
+                    completedDirectorySnapshot,
+                    processor.ProcessAsync);
+        }
+        finally
+        {
+            cleanupWarnings = workspace.CleanupBatch();
+        }
+
+        return AttachBatchCleanupWarnings(
+            results,
+            cleanupWarnings);
+    }
+
+    private static IReadOnlyList<ReconciliationBatchItemResult>
+        AttachBatchCleanupWarnings(
+            IReadOnlyList<ReconciliationBatchItemResult> results,
+            IReadOnlyList<string> cleanupWarnings)
+    {
+        if (results.Count == 0 || cleanupWarnings.Count == 0)
+        {
+            return results;
+        }
+
+        ReconciliationBatchItemResult[] updated = results.ToArray();
+        updated[^1] = updated[^1] with
+        {
+            Warnings = updated[^1].Warnings
+                .Concat(cleanupWarnings)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray()
+        };
+        return updated;
     }
 
     private async void OnSendReceiptClicked(object sender, RoutedEventArgs e)
@@ -496,9 +731,115 @@ public partial class MainWindow : Window
         return true;
     }
 
+    private bool TryCreateReconciliationQueueSnapshot(
+        out IReadOnlyList<ReconciliationWorkItem> queue,
+        out string? completedDirectorySnapshot)
+    {
+        queue = Array.Empty<ReconciliationWorkItem>();
+        completedDirectorySnapshot = null;
+
+        if (string.IsNullOrWhiteSpace(_reconciliationDirectory))
+        {
+            MessageBox.Show(
+                this,
+                "请先设置对账目录。",
+                "发送对账",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return false;
+        }
+
+        if (!Directory.Exists(_reconciliationDirectory))
+        {
+            _reconciliationDirectory = null;
+            UpdateDirectoryDisplays();
+            MessageBox.Show(
+                this,
+                "当前对账目录已不存在，请重新设置。",
+                "发送对账",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return false;
+        }
+
+        try
+        {
+            queue = ReconciliationFileQueue.Create(
+                _reconciliationDirectory);
+        }
+        catch (Exception exception) when (
+            exception is IOException
+            or UnauthorizedAccessException
+            or System.Security.SecurityException)
+        {
+            MessageBox.Show(
+                this,
+                "当前对账目录或其子文件夹无法读取，请检查目录权限后重试。",
+                "发送对账",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return false;
+        }
+
+        if (queue.Count == 0)
+        {
+            MessageBox.Show(
+                this,
+                "当前对账目录及其子文件夹中没有可查询的 PDF、图片、Office 文件或压缩包。",
+                "发送对账",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(
+                _reconciliationCompletedDirectory))
+        {
+            if (Directory.Exists(_reconciliationCompletedDirectory)
+                && !LauncherSettingsStore.AreSameDirectory(
+                    _reconciliationDirectory,
+                    _reconciliationCompletedDirectory))
+            {
+                completedDirectorySnapshot = Path.GetFullPath(
+                    _reconciliationCompletedDirectory);
+            }
+            else
+            {
+                _reconciliationCompletedDirectory = null;
+                UpdateDirectoryDisplays();
+            }
+        }
+
+        return true;
+    }
+
     internal DirectorySelectionOutcome ApplySelectedDirectory(
         string? directory,
         bool completedDirectory)
+    {
+        return ApplyDirectorySelection(
+            directory,
+            completedDirectory,
+            ref _receiptDirectory,
+            ref _completedDirectory);
+    }
+
+    internal DirectorySelectionOutcome ApplySelectedReconciliationDirectory(
+        string? directory,
+        bool completedDirectory)
+    {
+        return ApplyDirectorySelection(
+            directory,
+            completedDirectory,
+            ref _reconciliationDirectory,
+            ref _reconciliationCompletedDirectory);
+    }
+
+    private DirectorySelectionOutcome ApplyDirectorySelection(
+        string? directory,
+        bool completedDirectory,
+        ref string? sourceDirectory,
+        ref string? completedTargetDirectory)
     {
         if (string.IsNullOrWhiteSpace(directory))
         {
@@ -521,8 +862,8 @@ public partial class MainWindow : Window
         }
 
         string? otherDirectory = completedDirectory
-            ? _receiptDirectory
-            : _completedDirectory;
+            ? sourceDirectory
+            : completedTargetDirectory;
         if (!string.IsNullOrWhiteSpace(otherDirectory)
             && LauncherSettingsStore.AreSameDirectory(
                 normalizedDirectory,
@@ -533,11 +874,11 @@ public partial class MainWindow : Window
 
         if (completedDirectory)
         {
-            _completedDirectory = normalizedDirectory;
+            completedTargetDirectory = normalizedDirectory;
         }
         else
         {
-            _receiptDirectory = normalizedDirectory;
+            sourceDirectory = normalizedDirectory;
         }
 
         UpdateDirectoryDisplays();
@@ -591,6 +932,81 @@ public partial class MainWindow : Window
     {
         _batchRunning = false;
         SetBatchControlsEnabled(true);
+        ResetReconciliationButtonStatus();
+    }
+
+    internal void SetReconciliationConversionStatus(
+        ReconciliationWorkItem workItem,
+        bool isConverting)
+    {
+        string content = isConverting
+            ? "PDF转换中..."
+            : "处理中...";
+        string description = isConverting
+            ? $"正在转换 PDF：{workItem.RelativePath}"
+            : $"正在处理：{workItem.RelativePath}";
+
+        SetReconciliationButtonStatus(
+            content,
+            description);
+    }
+
+    internal void SetReconciliationArchiveStatus(
+        ReconciliationWorkItem workItem,
+        ArchivePdfPreparationStage stage)
+    {
+        (string content, string description) = stage switch
+        {
+            ArchivePdfPreparationStage.Extracting => (
+                "解压中...",
+                $"正在解压：{workItem.RelativePath}"),
+            ArchivePdfPreparationStage.Merging => (
+                "PDF合并中...",
+                $"正在合并 PDF：{workItem.RelativePath}"),
+            _ => (
+                "处理中...",
+                $"正在处理：{workItem.RelativePath}")
+        };
+
+        SetReconciliationButtonStatus(
+            content,
+            description);
+    }
+
+    private void SetReconciliationProcessingStatus()
+    {
+        SetReconciliationButtonStatus(
+            "处理中...",
+            "正在处理对账文件");
+    }
+
+    private void ResetReconciliationButtonStatus()
+    {
+        SetReconciliationButtonStatus(
+            "发送对账",
+            "发送对账");
+    }
+
+    private void SetReconciliationButtonStatus(
+        string content,
+        string description)
+    {
+        void ApplyStatus()
+        {
+            SendReconciliationButton.Content = content;
+            SendReconciliationButton.ToolTip = description;
+            System.Windows.Automation.AutomationProperties.SetName(
+                SendReconciliationButton,
+                description);
+        }
+
+        if (Dispatcher.CheckAccess())
+        {
+            ApplyStatus();
+            return;
+        }
+
+        Dispatcher.Invoke(ApplyStatus);
     }
 
     private void ShowBatchResults(
@@ -615,11 +1031,23 @@ public partial class MainWindow : Window
         resultWindow.ShowDialog();
     }
 
+    private void ShowReconciliationResults(
+        IReadOnlyList<ReconciliationBatchItemResult> results)
+    {
+        ReconciliationResultWindow resultWindow = new(results)
+        {
+            Owner = this
+        };
+        resultWindow.ShowDialog();
+    }
+
     private void SaveDirectorySettings(string title)
     {
-        if (!LauncherSettingsStore.Save(
+        if (!LauncherSettingsStore.SaveAll(
                 _receiptDirectory,
-                _completedDirectory))
+                _completedDirectory,
+                _reconciliationDirectory,
+                _reconciliationCompletedDirectory))
         {
             MessageBox.Show(
                 this,
@@ -635,6 +1063,16 @@ public partial class MainWindow : Window
         MessageBox.Show(
             this,
             "回单目录与已完成目录不能是同一目录。",
+            title,
+            MessageBoxButton.OK,
+            MessageBoxImage.Warning);
+    }
+
+    private void ShowReconciliationSameDirectoryWarning(string title)
+    {
+        MessageBox.Show(
+            this,
+            "对账目录与对账已完成目录不能是同一目录。",
             title,
             MessageBoxButton.OK,
             MessageBoxImage.Warning);
@@ -659,6 +1097,14 @@ public partial class MainWindow : Window
             string.IsNullOrWhiteSpace(_completedDirectory)
                 ? "尚未设置有效已完成目录"
                 : _completedDirectory;
+        ReconciliationDirectoryPathText.Text =
+            string.IsNullOrWhiteSpace(_reconciliationDirectory)
+                ? "尚未设置有效对账目录"
+                : _reconciliationDirectory;
+        ReconciliationCompletedDirectoryPathText.Text =
+            string.IsNullOrWhiteSpace(_reconciliationCompletedDirectory)
+                ? "尚未设置有效对账已完成目录"
+                : _reconciliationCompletedDirectory;
     }
 
     private void SetBatchControlsEnabled(bool enabled)
@@ -667,6 +1113,10 @@ public partial class MainWindow : Window
         SendReceiptButton.IsEnabled = controlsEnabled;
         ChooseDirectoryButton.IsEnabled = controlsEnabled;
         ChooseCompletedDirectoryButton.IsEnabled = controlsEnabled;
+        SendReconciliationButton.IsEnabled = controlsEnabled;
+        ChooseReconciliationDirectoryButton.IsEnabled = controlsEnabled;
+        ChooseReconciliationCompletedDirectoryButton.IsEnabled =
+            controlsEnabled;
         UpdateButton.IsEnabled = controlsEnabled;
     }
 

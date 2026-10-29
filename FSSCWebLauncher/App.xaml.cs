@@ -9,6 +9,19 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        if (OfficePdfWorker.TryGetRequestPath(
+                e.Args,
+                out string requestPath))
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            Shutdown(OfficePdfWorker.Run(requestPath));
+            return;
+        }
+
+        MainWindow mainWindow = new();
+        MainWindow = mainWindow;
+        mainWindow.Show();
+
         if (!File.Exists(UpdateInstaller.ErrorLogPath))
         {
             return;

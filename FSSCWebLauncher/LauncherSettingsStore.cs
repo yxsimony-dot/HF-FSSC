@@ -6,7 +6,9 @@ namespace FSSCWebLauncher;
 
 internal sealed record LauncherSettings(
     string? ReceiptDirectory,
-    string? CompletedDirectory);
+    string? CompletedDirectory,
+    string? ReconciliationDirectory,
+    string? ReconciliationCompletedDirectory);
 
 internal static class LauncherSettingsStore
 {
@@ -23,7 +25,7 @@ internal static class LauncherSettingsStore
         {
             if (!File.Exists(SettingsPath))
             {
-                return new LauncherSettings(null, null);
+                return new LauncherSettings(null, null, null, null);
             }
 
             string json = File.ReadAllText(SettingsPath, Encoding.UTF8);
@@ -32,17 +34,34 @@ internal static class LauncherSettingsStore
 
             return new LauncherSettings(
                 NormalizeExistingDirectory(settings?.ReceiptDirectory),
-                NormalizeExistingDirectory(settings?.CompletedDirectory));
+                NormalizeExistingDirectory(settings?.CompletedDirectory),
+                NormalizeExistingDirectory(settings?.ReconciliationDirectory),
+                NormalizeExistingDirectory(
+                    settings?.ReconciliationCompletedDirectory));
         }
         catch
         {
-            return new LauncherSettings(null, null);
+            return new LauncherSettings(null, null, null, null);
         }
     }
 
     public static bool Save(
         string? receiptDirectory,
         string? completedDirectory)
+    {
+        LauncherSettings current = Load();
+        return SaveAll(
+            receiptDirectory,
+            completedDirectory,
+            current.ReconciliationDirectory,
+            current.ReconciliationCompletedDirectory);
+    }
+
+    public static bool SaveAll(
+        string? receiptDirectory,
+        string? completedDirectory,
+        string? reconciliationDirectory,
+        string? reconciliationCompletedDirectory)
     {
         string temporaryPath =
             $"{SettingsPath}.{Guid.NewGuid():N}.tmp";
@@ -53,7 +72,10 @@ internal static class LauncherSettingsStore
             string json = JsonSerializer.Serialize(
                 new LauncherSettings(
                     NormalizeConfiguredDirectory(receiptDirectory),
-                    NormalizeConfiguredDirectory(completedDirectory)),
+                    NormalizeConfiguredDirectory(completedDirectory),
+                    NormalizeConfiguredDirectory(reconciliationDirectory),
+                    NormalizeConfiguredDirectory(
+                        reconciliationCompletedDirectory)),
                 new JsonSerializerOptions { WriteIndented = true });
 
             File.WriteAllText(

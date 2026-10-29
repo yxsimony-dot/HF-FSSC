@@ -8,7 +8,7 @@ using System.Windows.Automation;
 
 namespace FSSCWebLauncher;
 
-internal sealed class ReceiptPageClient
+internal sealed partial class ReceiptPageClient
 {
     private static readonly JsonSerializerOptions JsonOptions =
         new() { PropertyNameCaseInsensitive = true };
@@ -35,8 +35,9 @@ internal sealed class ReceiptPageClient
         StringBuilder text,
         int maximumCount);
 
-    private const string ClickReceiptMenuScript = """
+    private const string ClickArchiveCollectionMenuScriptTemplate = """
         (() => {
+            const targetName = __TARGET_NAME__;
             const normalize = value => (value ?? "").replace(/\s+/g, "");
             const isVisible = element => {
                 const style = window.getComputedStyle(element);
@@ -52,7 +53,7 @@ internal sealed class ReceiptPageClient
             );
             const target = menuItems.find(element =>
                 isVisible(element)
-                && normalize(element.innerText || element.textContent) === "电子回单"
+                && normalize(element.innerText || element.textContent) === normalize(targetName)
             );
 
             if (!target) {
@@ -1352,7 +1353,9 @@ internal sealed class ReceiptPageClient
             return true;
         }
 
-        if (await ExecuteDomStringAsync(ClickReceiptMenuScript) == "clicked"
+        string clickReceiptMenuScript =
+            CreateClickArchiveCollectionMenuScript("电子回单");
+        if (await ExecuteDomStringAsync(clickReceiptMenuScript) == "clicked"
             && await WaitForQueryControlsAsync(_timing.PageReadyTimeout))
         {
             return true;
@@ -1363,7 +1366,7 @@ internal sealed class ReceiptPageClient
         if (expandResult is "expanded" or "already-open")
         {
             await Task.Delay(250);
-            if (await ExecuteDomStringAsync(ClickReceiptMenuScript) == "clicked"
+            if (await ExecuteDomStringAsync(clickReceiptMenuScript) == "clicked"
                 && await WaitForQueryControlsAsync(_timing.PageReadyTimeout))
             {
                 return true;
@@ -1372,12 +1375,63 @@ internal sealed class ReceiptPageClient
 
         IntPtr windowHandle = _windowHandleProvider();
         if (windowHandle == IntPtr.Zero
-            || !await TryInvokeReceiptMenuWithAutomationAsync(windowHandle))
+            || !await TryInvokeArchiveCollectionMenuWithAutomationAsync(
+                windowHandle,
+                "电子回单"))
         {
             return false;
         }
 
         return await WaitForQueryControlsAsync(_timing.PageReadyTimeout);
+    }
+
+    public async Task<bool> NavigateToReconciliationPageAsync()
+    {
+        if (_browser.CoreWebView2 is null)
+        {
+            return false;
+        }
+
+        if (await WaitForReconciliationQueryControlsAsync(
+                TimeSpan.FromMilliseconds(600)))
+        {
+            return true;
+        }
+
+        const string targetName = "电子其他会计资料收集";
+        string clickMenuScript =
+            CreateClickArchiveCollectionMenuScript(targetName);
+        if (await ExecuteDomStringAsync(clickMenuScript) == "clicked"
+            && await WaitForReconciliationQueryControlsAsync(
+                _timing.PageReadyTimeout))
+        {
+            return true;
+        }
+
+        string? expandResult =
+            await ExecuteDomStringAsync(ExpandArchiveCollectionScript);
+        if (expandResult is "expanded" or "already-open")
+        {
+            await Task.Delay(250);
+            if (await ExecuteDomStringAsync(clickMenuScript) == "clicked"
+                && await WaitForReconciliationQueryControlsAsync(
+                    _timing.PageReadyTimeout))
+            {
+                return true;
+            }
+        }
+
+        IntPtr windowHandle = _windowHandleProvider();
+        if (windowHandle == IntPtr.Zero
+            || !await TryInvokeArchiveCollectionMenuWithAutomationAsync(
+                windowHandle,
+                targetName))
+        {
+            return false;
+        }
+
+        return await WaitForReconciliationQueryControlsAsync(
+            _timing.PageReadyTimeout);
     }
 
     public async Task<ReceiptQueryResult> QueryAsync(string serialNumber)
@@ -1751,12 +1805,14 @@ internal sealed class ReceiptPageClient
             null);
     }
 
-    private static string? ValidateSourceFile(string sourcePath)
+    private static string? ValidateSourceFile(
+        string sourcePath,
+        string fileLabel = "PDF")
     {
         if (!Path.IsPathFullyQualified(sourcePath)
             || !File.Exists(sourcePath))
         {
-            return "对应 PDF 已不存在";
+            return $"对应{fileLabel}已不存在";
         }
 
         try
@@ -1766,15 +1822,17 @@ internal sealed class ReceiptPageClient
                 FileMode.Open,
                 FileAccess.Read,
                 FileShare.ReadWrite | FileShare.Delete);
-            return stream.CanRead ? null : "对应 PDF 无法读取";
+            return stream.CanRead
+                ? null
+                : $"对应{fileLabel}无法读取";
         }
         catch (UnauthorizedAccessException)
         {
-            return "没有权限读取对应 PDF";
+            return $"没有权限读取对应{fileLabel}";
         }
         catch (IOException)
         {
-            return "对应 PDF 无法读取";
+            return $"对应{fileLabel}无法读取";
         }
     }
 
@@ -2172,11 +2230,19 @@ internal sealed class ReceiptPageClient
         return false;
     }
 
-    private async Task<bool> TryInvokeReceiptMenuWithAutomationAsync(
-        IntPtr windowHandle)
+    private static string CreateClickArchiveCollectionMenuScript(
+        string targetName) =>
+        ClickArchiveCollectionMenuScriptTemplate.Replace(
+            "__TARGET_NAME__",
+            JsonSerializer.Serialize(targetName),
+            StringComparison.Ordinal);
+
+    private async Task<bool> TryInvokeArchiveCollectionMenuWithAutomationAsync(
+        IntPtr windowHandle,
+        string targetName)
     {
         if (await Task.Run(
-                () => TryInvokeAutomationMenuItem(windowHandle, "电子回单")))
+                () => TryInvokeAutomationMenuItem(windowHandle, targetName)))
         {
             return true;
         }
@@ -2190,7 +2256,7 @@ internal sealed class ReceiptPageClient
 
         await Task.Delay(250);
         return await Task.Run(
-            () => TryInvokeAutomationMenuItem(windowHandle, "电子回单"));
+            () => TryInvokeAutomationMenuItem(windowHandle, targetName));
     }
 
     private async Task<string?> ExecuteDomStringAsync(string script)
