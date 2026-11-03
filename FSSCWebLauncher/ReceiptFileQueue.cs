@@ -12,7 +12,7 @@ internal static class ReceiptFileQueue
     public static IReadOnlyList<ReceiptWorkItem> Create(string directory)
     {
         return Directory
-            .EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
+            .EnumerateFiles(directory, "*", SearchOption.AllDirectories)
             .Where(path => string.Equals(
                 Path.GetExtension(path),
                 ".pdf",

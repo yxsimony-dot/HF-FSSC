@@ -710,7 +710,7 @@ public partial class MainWindow : Window
         {
             MessageBox.Show(
                 this,
-                "当前回单目录无法读取，请检查目录权限后重试。",
+                "当前回单目录或其子文件夹无法读取，请检查目录权限后重试。",
                 "发送回单",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
@@ -721,7 +721,7 @@ public partial class MainWindow : Window
         {
             MessageBox.Show(
                 this,
-                "当前目录第一层没有可查询的 PDF 文件。",
+                "当前回单目录及其子文件夹中没有可查询的 PDF 文件。",
                 "发送回单",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
