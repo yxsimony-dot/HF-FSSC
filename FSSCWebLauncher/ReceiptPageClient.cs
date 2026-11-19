@@ -1460,28 +1460,76 @@ internal sealed partial class ReceiptPageClient
     public async Task<ReceiptBatchItemResult> ProcessAsync(
         ReceiptWorkItem workItem)
     {
+        ReceiptQueryCheckResult query =
+            await QueryReceiptForUploadAsync(workItem);
+        ReceiptBatchItemResult? terminal =
+            CreateReceiptTerminalResult(query);
+        if (terminal is not null)
+        {
+            return terminal;
+        }
+
+        return await UploadReceiptAsync(
+            query.UploadContext!,
+            workItem.SourcePath);
+    }
+
+    public async Task<ReceiptQueryCheckResult>
+        QueryReceiptForUploadAsync(
+            ReceiptWorkItem workItem)
+    {
         ReceiptRowQueryResult? domQuery =
             await QueryWithDomAsync(workItem.SerialNumber);
         if (domQuery is not null)
         {
-            ReceiptBatchItemResult? terminal =
-                CreatePreUploadResult(workItem, domQuery);
-            if (terminal is not null)
-            {
-                return terminal;
-            }
+            return CreateReceiptQueryCheckResult(
+                workItem,
+                domQuery,
+                ReceiptUploadMode.Dom,
+                IntPtr.Zero);
+        }
 
-            string? sourceError = ValidateSourceFile(workItem.SourcePath);
-            if (sourceError is not null)
-            {
-                return new ReceiptBatchItemResult(
-                    workItem,
-                    ReceiptItemStatus.UploadFailed,
-                    sourceError);
-            }
+        IntPtr windowHandle = _windowHandleProvider();
+        if (windowHandle == IntPtr.Zero)
+        {
+            return new ReceiptQueryCheckResult(
+                workItem,
+                ReceiptQueryDisposition.QueryFailed,
+                Detail: "无法访问应用窗口完成查询");
+        }
 
+        ReceiptRowQueryResult automationQuery =
+            await QueryWithAutomationAsync(
+                windowHandle,
+                workItem.SerialNumber);
+        return CreateReceiptQueryCheckResult(
+            workItem,
+            automationQuery,
+            ReceiptUploadMode.Automation,
+            windowHandle);
+    }
+
+    public async Task<ReceiptBatchItemResult> UploadReceiptAsync(
+        ReceiptUploadContext uploadContext,
+        string uploadPath)
+    {
+        ReceiptWorkItem workItem = uploadContext.WorkItem;
+        string? sourceError =
+            ValidateSourceFile(uploadPath, "上传文件");
+        if (sourceError is not null)
+        {
+            return new ReceiptBatchItemResult(
+                workItem,
+                ReceiptItemStatus.UploadFailed,
+                sourceError);
+        }
+
+        if (uploadContext.Mode == ReceiptUploadMode.Dom)
+        {
             DomUploadResult domUpload =
-                await UploadWithDomAsync(workItem);
+                await UploadWithDomAsync(
+                    workItem,
+                    uploadPath);
             if (domUpload.Handled)
             {
                 return new ReceiptBatchItemResult(
@@ -1491,10 +1539,40 @@ internal sealed partial class ReceiptPageClient
                         : ReceiptItemStatus.UploadFailed,
                     domUpload.Error);
             }
+
+            IntPtr fallbackHandle = _windowHandleProvider();
+            if (fallbackHandle == IntPtr.Zero)
+            {
+                return new ReceiptBatchItemResult(
+                    workItem,
+                    ReceiptItemStatus.UploadFailed,
+                    "无法访问应用窗口完成上传");
+            }
+
+            ReceiptRowQueryResult fallbackQuery =
+                await QueryWithAutomationAsync(
+                    fallbackHandle,
+                    workItem.SerialNumber);
+            ReceiptQueryCheckResult fallbackCheck =
+                CreateReceiptQueryCheckResult(
+                    workItem,
+                    fallbackQuery,
+                    ReceiptUploadMode.Automation,
+                    fallbackHandle);
+            ReceiptBatchItemResult? fallbackTerminal =
+                CreateReceiptTerminalResult(fallbackCheck);
+            if (fallbackTerminal is not null)
+            {
+                return fallbackTerminal;
+            }
+
+            return await UploadWithAutomationAsync(
+                fallbackHandle,
+                workItem,
+                uploadPath);
         }
 
-        IntPtr windowHandle = _windowHandleProvider();
-        if (windowHandle == IntPtr.Zero)
+        if (uploadContext.WindowHandle == IntPtr.Zero)
         {
             return new ReceiptBatchItemResult(
                 workItem,
@@ -1502,7 +1580,10 @@ internal sealed partial class ReceiptPageClient
                 "无法访问应用窗口完成上传");
         }
 
-        return await ProcessWithAutomationAsync(windowHandle, workItem);
+        return await UploadWithAutomationAsync(
+            uploadContext.WindowHandle,
+            workItem,
+            uploadPath);
     }
 
     private async Task<ReceiptRowQueryResult?> QueryWithDomAsync(
@@ -1807,7 +1888,7 @@ internal sealed partial class ReceiptPageClient
 
     private static string? ValidateSourceFile(
         string sourcePath,
-        string fileLabel = "PDF")
+        string fileLabel = "文件")
     {
         if (!Path.IsPathFullyQualified(sourcePath)
             || !File.Exists(sourcePath))
@@ -1874,8 +1955,69 @@ internal sealed partial class ReceiptPageClient
         return null;
     }
 
+    private static ReceiptQueryCheckResult
+        CreateReceiptQueryCheckResult(
+            ReceiptWorkItem workItem,
+            ReceiptRowQueryResult query,
+            ReceiptUploadMode mode,
+            IntPtr windowHandle)
+    {
+        ReceiptBatchItemResult? terminal =
+            CreatePreUploadResult(workItem, query);
+        if (terminal is null)
+        {
+            return new ReceiptQueryCheckResult(
+                workItem,
+                ReceiptQueryDisposition.ReadyForUpload,
+                new ReceiptUploadContext(
+                    workItem,
+                    mode,
+                    windowHandle));
+        }
+
+        ReceiptQueryDisposition disposition = terminal.Status switch
+        {
+            ReceiptItemStatus.ExistingAttachment =>
+                ReceiptQueryDisposition.ExistingAttachment,
+            ReceiptItemStatus.UploadFailed =>
+                ReceiptQueryDisposition.UploadFailed,
+            _ => ReceiptQueryDisposition.QueryFailed
+        };
+        return new ReceiptQueryCheckResult(
+            workItem,
+            disposition,
+            Detail: terminal.Detail);
+    }
+
+    private static ReceiptBatchItemResult? CreateReceiptTerminalResult(
+        ReceiptQueryCheckResult query)
+    {
+        return query.Disposition switch
+        {
+            ReceiptQueryDisposition.ReadyForUpload
+                when query.UploadContext is not null =>
+                null,
+            ReceiptQueryDisposition.ExistingAttachment =>
+                new ReceiptBatchItemResult(
+                    query.WorkItem,
+                    ReceiptItemStatus.ExistingAttachment,
+                    query.Detail),
+            ReceiptQueryDisposition.UploadFailed =>
+                new ReceiptBatchItemResult(
+                    query.WorkItem,
+                    ReceiptItemStatus.UploadFailed,
+                    query.Detail),
+            _ => new ReceiptBatchItemResult(
+                query.WorkItem,
+                ReceiptItemStatus.QueryFailed,
+                query.Detail
+                    ?? "查询结果无法确定是否需要上传")
+        };
+    }
+
     private async Task<DomUploadResult> UploadWithDomAsync(
-        ReceiptWorkItem workItem)
+        ReceiptWorkItem workItem,
+        string uploadPath)
     {
         string token = Guid.NewGuid().ToString("N");
         IReadOnlySet<string> baselineDialogIds =
@@ -1923,7 +2065,7 @@ internal sealed partial class ReceiptPageClient
             FileDialogSubmitResult dialogResult = await Task.Run(
                 () => TrySubmitOpenFileDialog(
                     baselineDialogIds,
-                    workItem.SourcePath,
+                    uploadPath,
                     _timing.FileDialogTimeout));
             if (!dialogResult.Submitted)
             {
@@ -1937,14 +2079,14 @@ internal sealed partial class ReceiptPageClient
         {
             bool fileSet = await TrySetDomFileInputAsync(
                 token,
-                workItem.SourcePath);
+                uploadPath);
             if (!fileSet)
             {
                 await CleanupDomUploadAsync(token);
                 return prepared.Status == "input-ready"
                     ? DomUploadResult.Fallback()
                     : DomUploadResult.Failure(
-                        "无法将当前 PDF 设置到网页文件输入控件");
+                        "无法将当前文件设置到网页文件输入控件");
             }
         }
 
@@ -2113,30 +2255,11 @@ internal sealed partial class ReceiptPageClient
         return $"{VirtualGridHelperScript}{Environment.NewLine}{script}";
     }
 
-    private async Task<ReceiptBatchItemResult> ProcessWithAutomationAsync(
+    private async Task<ReceiptBatchItemResult> UploadWithAutomationAsync(
         IntPtr windowHandle,
-        ReceiptWorkItem workItem)
+        ReceiptWorkItem workItem,
+        string uploadPath)
     {
-        ReceiptRowQueryResult query =
-            await QueryWithAutomationAsync(
-                windowHandle,
-                workItem.SerialNumber);
-        ReceiptBatchItemResult? terminal =
-            CreatePreUploadResult(workItem, query);
-        if (terminal is not null)
-        {
-            return terminal;
-        }
-
-        string? sourceError = ValidateSourceFile(workItem.SourcePath);
-        if (sourceError is not null)
-        {
-            return new ReceiptBatchItemResult(
-                workItem,
-                ReceiptItemStatus.UploadFailed,
-                sourceError);
-        }
-
         AutomationUploadStartResult start = await Task.Run(
             () => TryStartAutomationUpload(
                 windowHandle,
@@ -2152,7 +2275,7 @@ internal sealed partial class ReceiptPageClient
         FileDialogSubmitResult dialogResult = await Task.Run(
             () => TrySubmitOpenFileDialog(
                 start.BaselineDialogIds,
-                workItem.SourcePath,
+                uploadPath,
                 _timing.FileDialogTimeout));
         if (!dialogResult.Submitted)
         {

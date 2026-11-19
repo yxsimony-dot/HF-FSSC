@@ -7,7 +7,8 @@ internal enum ReceiptItemStatus
     QueryFailed,
     ExistingAttachment,
     UploadFailed,
-    MoveFailed
+    MoveFailed,
+    ConversionFailed
 }
 
 internal sealed record ReceiptBatchItemResult(
@@ -15,6 +16,9 @@ internal sealed record ReceiptBatchItemResult(
     ReceiptItemStatus Status,
     string? Detail = null)
 {
+    public IReadOnlyList<string> Warnings { get; init; } =
+        Array.Empty<string>();
+
     public string SerialNumber => WorkItem.SerialNumber;
 
     public bool ShouldMove => Status == ReceiptItemStatus.UploadedPendingMove;
@@ -29,6 +33,11 @@ internal sealed record ReceiptBatchItemResult(
         ReceiptItemStatus.ExistingAttachment => "已有附件，未上传，未移动",
         ReceiptItemStatus.UploadFailed => Detail ?? "上传失败",
         ReceiptItemStatus.MoveFailed => Detail ?? "上传成功，但移动失败",
+        ReceiptItemStatus.ConversionFailed =>
+            Detail ?? (WorkItem.FileKind
+                == ReconciliationFileKind.Archive
+                    ? "压缩包处理失败，源文件已保留"
+                    : "Office 转 PDF 失败，源文件已保留"),
         _ => Detail ?? "未知状态"
     };
 

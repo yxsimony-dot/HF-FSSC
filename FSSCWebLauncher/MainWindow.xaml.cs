@@ -474,6 +474,8 @@ public partial class MainWindow : Window
             return;
         }
 
+        SetReceiptProcessingStatus();
+
         try
         {
             bool pageReady;
@@ -500,21 +502,91 @@ public partial class MainWindow : Window
                 return;
             }
 
-            IReadOnlyList<ReceiptBatchItemResult> webResults =
-                await ReceiptBatchRunner.ProcessSequentiallyAsync(
-                    queue,
-                    _receiptPageClient.ProcessAsync);
-            IReadOnlyList<ReceiptBatchItemResult> finalResults =
-                ReceiptBatchRunner.MoveUploadedFiles(
-                    webResults,
-                    _completedDirectory!);
-
-            ShowBatchResults(finalResults);
+            IReadOnlyList<ReceiptBatchItemResult> results =
+                await ProcessReceiptBatchAsync(queue);
+            ShowBatchResults(results);
         }
         finally
         {
             EndBatch();
         }
+    }
+
+    private async Task<IReadOnlyList<ReceiptBatchItemResult>>
+        ProcessReceiptBatchAsync(
+            IReadOnlyList<ReceiptWorkItem> queue)
+    {
+        ReconciliationTemporaryWorkspace workspace = new();
+        IReadOnlyList<ReceiptBatchItemResult> results =
+            Array.Empty<ReceiptBatchItemResult>();
+        IReadOnlyList<string> cleanupWarnings;
+
+        try
+        {
+            OfficePdfConversionService conversionService = new(
+                workspace);
+            ArchivePdfPreparationService archiveService = new(
+                workspace,
+                stageChanged: (workItem, stage) =>
+                    SetReceiptArchiveStatus(
+                        ToReceiptWorkItem(workItem),
+                        stage));
+            ReconciliationUploadPayloadFactory payloadFactory = new(
+                conversionService.CreatePayloadAsync,
+                archiveService.CreatePayloadAsync);
+            ReceiptItemProcessor processor = new(
+                _receiptPageClient!,
+                payloadFactory,
+                SetReceiptConversionStatus);
+            IReadOnlyList<ReceiptBatchItemResult> webResults =
+                await ReceiptBatchRunner.ProcessSequentiallyAsync(
+                    queue,
+                    processor.ProcessAsync);
+            results = ReceiptBatchRunner.MoveUploadedFiles(
+                webResults,
+                _completedDirectory!);
+        }
+        finally
+        {
+            cleanupWarnings = workspace.CleanupBatch();
+        }
+
+        return AttachReceiptBatchCleanupWarnings(
+            results,
+            cleanupWarnings);
+    }
+
+    private static ReceiptWorkItem ToReceiptWorkItem(
+        ReconciliationWorkItem workItem)
+    {
+        return new ReceiptWorkItem(
+            workItem.FileName,
+            workItem.ArchiveName,
+            workItem.SourcePath)
+        {
+            RelativePath = workItem.RelativePath
+        };
+    }
+
+    private static IReadOnlyList<ReceiptBatchItemResult>
+        AttachReceiptBatchCleanupWarnings(
+            IReadOnlyList<ReceiptBatchItemResult> results,
+            IReadOnlyList<string> cleanupWarnings)
+    {
+        if (results.Count == 0 || cleanupWarnings.Count == 0)
+        {
+            return results;
+        }
+
+        ReceiptBatchItemResult[] updated = results.ToArray();
+        updated[^1] = updated[^1] with
+        {
+            Warnings = updated[^1].Warnings
+                .Concat(cleanupWarnings)
+                .Distinct(StringComparer.Ordinal)
+                .ToArray()
+        };
+        return updated;
     }
 
     private async void OnCheckForUpdatesClicked(
@@ -721,7 +793,7 @@ public partial class MainWindow : Window
         {
             MessageBox.Show(
                 this,
-                "当前回单目录及其子文件夹中没有可查询的 PDF 文件。",
+                "当前回单目录及其子文件夹中没有可查询的 PDF、图片、Office 文件或压缩包。",
                 "发送回单",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
@@ -932,7 +1004,82 @@ public partial class MainWindow : Window
     {
         _batchRunning = false;
         SetBatchControlsEnabled(true);
+        ResetReceiptButtonStatus();
         ResetReconciliationButtonStatus();
+    }
+
+    internal void SetReceiptConversionStatus(
+        ReceiptWorkItem workItem,
+        bool isConverting)
+    {
+        string content = isConverting
+            ? "PDF转换中..."
+            : "处理中...";
+        string description = isConverting
+            ? $"正在转换 PDF：{workItem.RelativePath}"
+            : $"正在处理：{workItem.RelativePath}";
+
+        SetReceiptButtonStatus(
+            content,
+            description);
+    }
+
+    internal void SetReceiptArchiveStatus(
+        ReceiptWorkItem workItem,
+        ArchivePdfPreparationStage stage)
+    {
+        (string content, string description) = stage switch
+        {
+            ArchivePdfPreparationStage.Extracting => (
+                "解压中...",
+                $"正在解压：{workItem.RelativePath}"),
+            ArchivePdfPreparationStage.Merging => (
+                "PDF合并中...",
+                $"正在合并 PDF：{workItem.RelativePath}"),
+            _ => (
+                "处理中...",
+                $"正在处理：{workItem.RelativePath}")
+        };
+
+        SetReceiptButtonStatus(
+            content,
+            description);
+    }
+
+    private void SetReceiptProcessingStatus()
+    {
+        SetReceiptButtonStatus(
+            "处理中...",
+            "正在处理回单文件");
+    }
+
+    private void ResetReceiptButtonStatus()
+    {
+        SetReceiptButtonStatus(
+            "发送回单",
+            "发送回单");
+    }
+
+    private void SetReceiptButtonStatus(
+        string content,
+        string description)
+    {
+        void ApplyStatus()
+        {
+            SendReceiptButton.Content = content;
+            SendReceiptButton.ToolTip = description;
+            System.Windows.Automation.AutomationProperties.SetName(
+                SendReceiptButton,
+                description);
+        }
+
+        if (Dispatcher.CheckAccess())
+        {
+            ApplyStatus();
+            return;
+        }
+
+        Dispatcher.Invoke(ApplyStatus);
     }
 
     internal void SetReconciliationConversionStatus(

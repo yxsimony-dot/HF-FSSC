@@ -949,15 +949,6 @@ internal sealed partial class ReceiptPageClient
                         null);
                 }
 
-                if (state.ExactMatchCount != 1)
-                {
-                    return new ReceiptRowQueryResult(
-                        ReceiptQueryStatus.PageError,
-                        null,
-                        false,
-                        "查询结果存在多个相同档案名称，无法安全上传");
-                }
-
                 if (state.AttachmentCount is null)
                 {
                     return new ReceiptRowQueryResult(
@@ -1226,7 +1217,7 @@ internal sealed partial class ReceiptPageClient
                 prepared.Status switch
                 {
                     "row-unavailable" =>
-                        "上传前无法重新定位唯一档案结果行",
+                        "上传前无法重新定位第一个档案结果行",
                     "attachment-unreadable" =>
                         "上传前无法读取附件数量",
                     "attachment-changed" =>
@@ -1310,7 +1301,7 @@ internal sealed partial class ReceiptPageClient
 
                 unavailableReadings = 0;
                 if (state.SuccessMessage
-                    || (state.ExactMatchCount == 1
+                    || (state.ExactMatchCount > 0
                         && state.AttachmentCount is > 0))
                 {
                     return DomUploadResult.Success();
@@ -1321,12 +1312,6 @@ internal sealed partial class ReceiptPageClient
                 {
                     return DomUploadResult.Failure(
                         $"网页提示上传失败：{state.FailureText}");
-                }
-
-                if (state.ExactMatchCount > 1)
-                {
-                    return DomUploadResult.Failure(
-                        "上传后出现多个相同档案名称，无法确认结果");
                 }
 
                 await Task.Delay(_timing.PollInterval);
@@ -1496,6 +1481,26 @@ internal sealed partial class ReceiptPageClient
             .Replace(
                 "data-fssc-receipt-file-input",
                 "data-fssc-reconciliation-file-input",
+                StringComparison.Ordinal)
+            .Replace(
+                "session.exactRows.size !== 1",
+                "session.exactRows.size === 0",
+                StringComparison.Ordinal)
+            .Replace(
+                "const exactRows = Array.from(session.exactRows).sort();",
+                "const exactRows = Array.from(session.exactRows);",
+                StringComparison.Ordinal)
+            .Replace(
+                "exactRows.length === 1",
+                "exactRows.length > 0",
+                StringComparison.Ordinal)
+            .Replace(
+                "matches.length === 1",
+                "matches.length > 0",
+                StringComparison.Ordinal)
+            .Replace(
+                "virtual.exactMatchCount !== 1",
+                "virtual.exactMatchCount === 0",
                 StringComparison.Ordinal);
     }
 
@@ -2044,7 +2049,7 @@ internal sealed partial class ReceiptPageClient
                 "结果表格缺少档案名称或附件数量列");
         }
 
-        Dictionary<string, AutomationElement> matchingRows =
+        IReadOnlyList<AutomationElement> matchingRows =
             FindReconciliationMatchingRows(
                 grid,
                 archiveHeader,
@@ -2058,17 +2063,7 @@ internal sealed partial class ReceiptPageClient
                 "未找到精确匹配的档案名称结果行");
         }
 
-        if (matchingRows.Count > 1)
-        {
-            return new AutomationRowState(
-                false,
-                null,
-                false,
-                "结果表格存在多个相同档案名称");
-        }
-
-        AutomationElement exactRow =
-            matchingRows.Values.Single();
+        AutomationElement exactRow = matchingRows[0];
         int? attachmentCount =
             ReadAttachmentCount(
                 exactRow,
@@ -2104,19 +2099,18 @@ internal sealed partial class ReceiptPageClient
                     "未找到电子其他会计资料收集结果表格");
             }
 
-            Dictionary<string, AutomationElement> matchingRows =
+            IReadOnlyList<AutomationElement> matchingRows =
                 FindReconciliationMatchingRows(
                     grid,
                     archiveHeader,
                     archiveName);
-            if (matchingRows.Count != 1)
+            if (matchingRows.Count == 0)
             {
                 return AutomationUploadStartResult.Failure(
-                    "无法唯一定位当前档案名称结果行");
+                    "无法定位当前档案名称的第一个结果行");
             }
 
-            AutomationElement exactRow =
-                matchingRows.Values.Single();
+            AutomationElement exactRow = matchingRows[0];
             AutomationElement? attachmentHeader =
                 FindColumnHeader(grid, "附件数量");
             int? count = attachmentHeader is null
@@ -2247,7 +2241,7 @@ internal sealed partial class ReceiptPageClient
         }
     }
 
-    private static Dictionary<string, AutomationElement>
+    private static IReadOnlyList<AutomationElement>
         FindReconciliationMatchingRows(
             AutomationElement grid,
             AutomationElement archiveHeader,
@@ -2290,7 +2284,32 @@ internal sealed partial class ReceiptPageClient
             }
         }
 
-        return matchingRows;
+        return matchingRows.Values
+            .OrderBy(row =>
+                GetReconciliationRowPosition(row).Top)
+            .ThenBy(row =>
+                GetReconciliationRowPosition(row).Left)
+            .ToArray();
+    }
+
+    private static (double Top, double Left)
+        GetReconciliationRowPosition(AutomationElement row)
+    {
+        try
+        {
+            System.Windows.Rect bounds =
+                row.Current.BoundingRectangle;
+            if (!bounds.IsEmpty)
+            {
+                return (bounds.Top, bounds.Left);
+            }
+        }
+        catch
+        {
+            // Preserve accessibility discovery order when bounds are stale.
+        }
+
+        return (double.PositiveInfinity, double.PositiveInfinity);
     }
 
     private static AutomationElement? FindReconciliationResultGrid(

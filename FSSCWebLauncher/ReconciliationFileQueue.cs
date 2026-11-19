@@ -82,7 +82,7 @@ internal static class ReconciliationFileQueue
             .ToArray();
     }
 
-    private static bool IsSupportedFile(string path)
+    internal static bool IsSupportedFile(string path)
     {
         return SupportedExtensions.Contains(
             Path.GetExtension(path));

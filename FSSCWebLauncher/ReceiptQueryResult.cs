@@ -23,3 +23,28 @@ internal sealed record ReceiptQueryResult(
         _ => string.Empty
     };
 }
+
+internal enum ReceiptQueryDisposition
+{
+    ReadyForUpload,
+    ExistingAttachment,
+    QueryFailed,
+    UploadFailed
+}
+
+internal enum ReceiptUploadMode
+{
+    Dom,
+    Automation
+}
+
+internal sealed record ReceiptUploadContext(
+    ReceiptWorkItem WorkItem,
+    ReceiptUploadMode Mode,
+    IntPtr WindowHandle);
+
+internal sealed record ReceiptQueryCheckResult(
+    ReceiptWorkItem WorkItem,
+    ReceiptQueryDisposition Disposition,
+    ReceiptUploadContext? UploadContext = null,
+    string? Detail = null);

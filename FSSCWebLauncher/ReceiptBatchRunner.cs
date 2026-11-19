@@ -64,13 +64,51 @@ internal static class ReceiptBatchRunner
                 return result.MarkMoveFailed("已完成目录不存在，源文件已保留");
             }
 
+            string completedRoot = Path.TrimEndingDirectorySeparator(
+                Path.GetFullPath(completedDirectory));
             string sourcePath = Path.GetFullPath(result.WorkItem.SourcePath);
-            string destinationPath = Path.GetFullPath(
-                Path.Combine(completedDirectory, result.WorkItem.FileName));
 
             if (!File.Exists(sourcePath))
             {
-                return result.MarkMoveFailed("上传成功，但源 PDF 已不存在");
+                return result.MarkMoveFailed("上传成功，但源文件已不存在");
+            }
+
+            if (string.IsNullOrWhiteSpace(result.WorkItem.RelativePath)
+                || Path.IsPathRooted(result.WorkItem.RelativePath))
+            {
+                return result.MarkMoveFailed(
+                    "相对路径无效，未执行移动，源文件已保留");
+            }
+
+            string destinationPath = Path.GetFullPath(
+                Path.Combine(
+                    completedRoot,
+                    result.WorkItem.RelativePath));
+            string destinationRelative = Path.GetRelativePath(
+                completedRoot,
+                destinationPath);
+            if (Path.IsPathRooted(destinationRelative)
+                || destinationRelative.Equals(
+                    "..",
+                    StringComparison.Ordinal)
+                || destinationRelative.StartsWith(
+                    $"..{Path.DirectorySeparatorChar}",
+                    StringComparison.Ordinal)
+                || destinationRelative.StartsWith(
+                    $"..{Path.AltDirectorySeparatorChar}",
+                    StringComparison.Ordinal))
+            {
+                return result.MarkMoveFailed(
+                    "目标路径超出已完成目录，未执行移动，源文件已保留");
+            }
+
+            if (string.Equals(
+                    sourcePath,
+                    destinationPath,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return result.MarkMoveFailed(
+                    "源文件与目标文件路径相同，未执行移动");
             }
 
             if (File.Exists(destinationPath))
@@ -79,6 +117,15 @@ internal static class ReceiptBatchRunner
                     "已完成目录存在同名文件，未覆盖，源文件已保留");
             }
 
+            string? destinationDirectory =
+                Path.GetDirectoryName(destinationPath);
+            if (string.IsNullOrWhiteSpace(destinationDirectory))
+            {
+                return result.MarkMoveFailed(
+                    "无法确定目标子文件夹，源文件已保留");
+            }
+
+            Directory.CreateDirectory(destinationDirectory);
             File.Move(sourcePath, destinationPath, overwrite: false);
             return result.MarkMoved();
         }
